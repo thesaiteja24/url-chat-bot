@@ -1,9 +1,7 @@
 streamlit
 requests
 beautifulsoup4
-python-dotenv
 langchain
-langchain_community
-langchain_openai
+langchain-openai
+faiss-cpu
 openai
-chromadb

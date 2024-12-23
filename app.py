@@ -5,16 +5,13 @@ import json
 import os
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
-from dotenv import load_dotenv
 from datetime import datetime
 import uuid
-
-# Load environment variables
-load_dotenv()
+import pickle
 
 # Initialize session state
 if 'chat_history' not in st.session_state:
@@ -31,28 +28,9 @@ if 'scraped_urls' not in st.session_state:
     st.session_state.scraped_urls = set()
 
 def save_chat_history():
-    """Save chat history to a JSON file"""
-    if not os.path.exists('chat_histories'):
-        os.makedirs('chat_histories')
-    
-    filename = f'chat_histories/chat_history_{st.session_state.current_chat_id}.json'
-    chat_data = {
-        'chat_id': st.session_state.current_chat_id,
-        'url': st.session_state.all_chats[st.session_state.current_chat_id]['url'],
-        'timestamp': st.session_state.all_chats[st.session_state.current_chat_id]['timestamp'],
-        'messages': st.session_state.chat_history
-    }
-    
-    with open(filename, 'w') as f:
-        json.dump(chat_data, f)
-
-def load_chat_history(chat_id):
-    """Load chat history from a JSON file"""
-    filename = f'chat_histories/chat_history_{chat_id}.json'
-    if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            return json.load(f)
-    return None
+    """Save chat history to session state"""
+    if st.session_state.current_chat_id:
+        st.session_state.all_chats[st.session_state.current_chat_id]['messages'] = st.session_state.chat_history
 
 def create_new_chat():
     """Create a new chat session"""
@@ -63,7 +41,8 @@ def create_new_chat():
     st.session_state.conversation_chain = None
     st.session_state.all_chats[chat_id] = {
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'url': None
+        'url': None,
+        'messages': []
     }
     return chat_id
 
@@ -73,15 +52,11 @@ def switch_chat(chat_id):
         save_chat_history()
     
     st.session_state.current_chat_id = chat_id
-    chat_data = load_chat_history(chat_id)
-    if chat_data:
-        st.session_state.chat_history = chat_data['messages']
-        if chat_data['url'] in st.session_state.scraped_urls:
-            data = scrape_data(chat_data['url'])
-            if 'error' not in data:
-                chunks = chunk_data(data)
-                st.session_state.vector_store = create_embeddings_chroma(chunks)
-                st.session_state.conversation_chain = initialize_conversation_chain(st.session_state.vector_store)
+    chat_data = st.session_state.all_chats[chat_id]
+    st.session_state.chat_history = chat_data['messages']
+    
+    if chat_data['url'] in st.session_state.scraped_urls:
+        initialize_chat_with_url(chat_data['url'])
 
 def scrape_data(url):
     """Scrape data from a given URL"""
@@ -141,10 +116,10 @@ def chunk_data(data, chunk_size=256):
     
     return [Document(page_content=chunk) for chunk in chunks]
 
-def create_embeddings_chroma(chunks, persist_directory='./chroma_db'):
-    """Create embeddings using Chroma"""
-    embeddings = OpenAIEmbeddings(model='text-embedding-3-small', dimensions=1536)
-    vector_store = Chroma.from_documents(chunks, embeddings, persist_directory=persist_directory)
+def create_embeddings_faiss(chunks):
+    """Create embeddings using FAISS"""
+    embeddings = OpenAIEmbeddings(model='text-embedding-3-small')
+    vector_store = FAISS.from_documents(chunks, embeddings)
     return vector_store
 
 def initialize_conversation_chain(vector_store):
@@ -161,6 +136,19 @@ def initialize_conversation_chain(vector_store):
     )
     
     return conversation_chain
+
+def initialize_chat_with_url(url):
+    """Initialize chat with a given URL"""
+    data = scrape_data(url)
+    if 'error' not in data:
+        chunks = chunk_data(data)
+        vector_store = create_embeddings_faiss(chunks)
+        conversation_chain = initialize_conversation_chain(vector_store)
+        
+        st.session_state.vector_store = vector_store
+        st.session_state.conversation_chain = conversation_chain
+        return True
+    return False
 
 def main():
     st.set_page_config(page_title="Web Chat Bot", layout="wide")
@@ -206,25 +194,16 @@ def main():
     col1, col2 = st.columns([3, 1])
     with col1:
         url = st.text_input("Enter URL to scrape:")
-        scrape_button = st.button("Scrape and Process")
     
-    if scrape_button:
+    if st.button("Scrape and Process"):
         with st.spinner("Scraping and processing data..."):
-            data = scrape_data(url)
-            
-            if "error" in data:
-                st.error(f"Error scraping data: {data['error']}")
-            else:
-                chunks = chunk_data(data)
-                vector_store = create_embeddings_chroma(chunks)
-                conversation_chain = initialize_conversation_chain(vector_store)
-                
-                st.session_state.vector_store = vector_store
-                st.session_state.conversation_chain = conversation_chain
+            if initialize_chat_with_url(url):
                 st.session_state.scraped_urls.add(url)
                 st.session_state.all_chats[st.session_state.current_chat_id]['url'] = url
                 save_chat_history()
                 st.success("Data processed successfully! You can now start chatting.")
+            else:
+                st.error("Error processing the URL. Please try again.")
     
     # Chat interface
     st.header("Chat Interface")
