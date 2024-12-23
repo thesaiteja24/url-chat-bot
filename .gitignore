@@ -447,3 +447,8 @@ __pycache__/
 *.zlogin
 *.zlogout
 *.zpre
+.env
+__pycache__/
+.streamlit/
+chat_histories/
+chroma_db/
